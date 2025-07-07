@@ -163,6 +163,14 @@ async function getGeminiAnalysis(pdfText, role, analysisType, jobDescription) {
 }
 
 // API Routes
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'ResumeIQ API is running!',
+    status: 'healthy',
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
   try {
     if (!req.file) {
