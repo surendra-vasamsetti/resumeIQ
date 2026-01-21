@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const pdf = require('pdf-parse');
 require('dotenv').config();
 
@@ -10,17 +9,17 @@ const port = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-
 // Configure multer for file uploads
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// Initialize OpenAI
+const OpenAI = require('openai');
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // Helper function to extract text from PDF
 async function extractPDFText(buffer) {
@@ -32,24 +31,8 @@ async function extractPDFText(buffer) {
   }
 }
 
-// Helper function to extract JSON from text
-function extractJsonFromText(text) {
-  const startIndex = text.indexOf('{');
-  const endIndex = text.lastIndexOf('}');
-  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-    let jsonString = text.substring(startIndex, endIndex + 1);
-    // Remove potential markdown backticks
-    jsonString = jsonString.replace(/```json/g, '').replace(/```/g, '');
-    return jsonString.trim();
-  }
-  // If no JSON object is found, return the original text and let JSON.parse handle it
-  // This is to ensure that if the model returns a perfect JSON string, it still works
-  return text;
-}
-
-
-// Helper function to get Gemini analysis
-async function getGeminiAnalysis(pdfText, role, analysisType, jobDescription) {
+// Helper function to get OpenAI analysis
+async function getOpenAIAnalysis(pdfText, role, analysisType, jobDescription) {
   let prompt = '';
   
   if (analysisType === 'quick') {
@@ -147,22 +130,38 @@ async function getGeminiAnalysis(pdfText, role, analysisType, jobDescription) {
     `;
   }
 
-  let text = '';
   try {
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    text = response.text();
-    
-    const jsonString = extractJsonFromText(text);
-    return JSON.parse(jsonString);
+    const completion = await openai.chat.completions.create({
+      messages: [
+        { role: "system", content: "You are a helpful assistant designed to output JSON." },
+        { role: "user", content: prompt }
+      ],
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+    });
+
+    const content = completion.choices[0].message.content;
+    return JSON.parse(content);
   } catch (error) {
-    console.error('Gemini API Error:', error);
-    console.error('Raw Gemini Response:', text);
-    throw new Error('Failed to analyze resume with AI. Please check the server logs for more details.');
+    console.error('OpenAI API Error:', error.message);
+    let errorMessage = 'Failed to get a valid JSON response from the AI model.';
+    
+    if (error.response) {
+        console.error('OpenAI API Error Data:', error.response.data);
+        errorMessage = `OpenAI API Error: ${JSON.stringify(error.response.data)}`;
+    } else if (error.message) {
+        errorMessage = `OpenAI API Error: ${error.message}`;
+    }
+    
+    console.error('OpenAI API Error Stack:', error.stack);
+    throw new Error(errorMessage);
   }
 }
 
 // API Routes
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 app.get('/', (req, res) => {
   res.json({ 
     message: 'ResumeIQ API is running!',
@@ -172,26 +171,65 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
+  console.log('--- New /api/analyze-resume request ---');
+  console.log('Request Body:', JSON.stringify(req.body, null, 2));
+  console.log('Request File:', req.file);
+  console.log('------------------------------------');
+
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No resume file uploaded' });
+      return res.status(400).json({ 
+        error: 'No resume file uploaded',
+        details: {
+          receivedFields: req.body,
+          receivedFile: req.file
+        }
+      });
     }
 
     const { role, analysisType, jobDescription } = req.body;
 
-    if (!role || !analysisType) {
-      return res.status(400).json({ error: 'Role and analysis type are required' });
+    if (!role) {
+      return res.status(400).json({
+        error: 'Role is required.',
+        details: { receivedFields: req.body }
+      });
+    }
+    if (!analysisType) {
+      return res.status(400).json({
+        error: 'Analysis type is required.',
+        details: { receivedFields: req.body }
+      });
+    }
+
+    // Specific validation for optimization analysis
+    if (analysisType === 'optimization' && (!jobDescription || typeof jobDescription !== 'string' || jobDescription.trim().length === 0)) {
+      return res.status(400).json({
+        error: 'A job description is required for optimization analysis and must be a non-empty string.',
+        details: { receivedFields: req.body }
+      });
     }
 
     // Extract text from PDF
-    const pdfText = await extractPDFText(req.file.buffer);
+    let pdfText;
+    try {
+      pdfText = await extractPDFText(req.file.buffer);
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Could not extract text from PDF. The file may not be a valid PDF.',
+        details: { receivedFile: req.file }
+      });
+    }
 
     if (!pdfText || pdfText.trim().length === 0) {
-      return res.status(400).json({ error: 'Could not extract text from PDF' });
+      return res.status(400).json({ 
+        error: 'Could not extract text from PDF. The file may be empty or corrupted.',
+        details: { receivedFile: req.file }
+      });
     }
 
     // Get AI analysis
-    const analysis = await getGeminiAnalysis(pdfText, role, analysisType, jobDescription);
+    const analysis = await getOpenAIAnalysis(pdfText, role, analysisType, jobDescription);
 
     res.json({
       success: true,
@@ -199,11 +237,10 @@ app.post('/api/analyze-resume', upload.single('resume'), async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Analysis Error:', error);
-    res.status(500).json({ 
-      error: 'Failed to analyze resume',
-      message: error.message 
-    });
+    console.error(`[ERROR] /api/analyze-resume: ${error.message}`);
+    console.error(`[ERROR] /api/analyze-resume: ${error.stack}`); // Log the error stack for debugging
+    // Send a more specific error message to the client
+    res.status(500).json({ error: error.message || 'An unexpected error occurred during analysis.' });
   }
 });
 

@@ -175,7 +175,12 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ onBack, onAnalyze }) => {
             </h2>
             <div className="flex items-center space-x-2 sm:space-x-4 mt-4 sm:mt-0">
               <button
-                onClick={() => setUseJobDescription(false)}
+                onClick={() => {
+                  setUseJobDescription(false);
+                  if (analysisType === 'optimization') {
+                    setAnalysisType('detailed');
+                  }
+                }}
                 className={`px-4 py-2 rounded-full font-medium transition-all duration-300 ${
                   !useJobDescription
                     ? 'bg-blue-600 text-white shadow-lg'
@@ -271,7 +276,10 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ onBack, onAnalyze }) => {
             </button>
             
             <button
-              onClick={() => setAnalysisType('optimization')}
+              onClick={() => {
+                setAnalysisType('optimization');
+                setUseJobDescription(true);
+              }}
               className={`p-4 rounded-xl border-2 transition-all duration-300 transform hover:scale-105 animate-fade-in-up delay-200 ${
                 analysisType === 'optimization'
                   ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 shadow-lg'
